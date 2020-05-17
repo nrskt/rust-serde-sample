@@ -10,3 +10,4 @@ edition = "2018"
 core = { path = "../core"}
 serde = { version = "*", features = ["derive"]}
 csv = "*"
+serde_json = "*"

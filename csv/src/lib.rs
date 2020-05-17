@@ -1,118 +1,104 @@
+use std::marker::PhantomData;
+
 use core::SampleValue;
 use serde::{de, Deserialize, Serialize, Serializer};
 
-trait ToCsv: Clone {
-    type Target;
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct CsvValue<T, Target>(T, PhantomData<Target>);
 
-    fn to_csv(&self) -> Self::Target;
-}
-
-fn to_csv<T>(value: T) -> T::Target
-where
-    T: ToCsv,
-{
-    value.to_csv()
-}
-
-trait FromCsv: Sized {
-    type Target;
-
-    fn from_csv(val: Self::Target) -> Result<Self, String>;
-}
-
-impl ToCsv for SampleValue {
-    type Target = u64;
-
-    fn to_csv(&self) -> Self::Target {
-        match self {
-            SampleValue::SampleA => 0,
-            SampleValue::SampleB => 1,
-            SampleValue::Other(_) => 999,
-        }
-    }
-}
-
-impl FromCsv for SampleValue {
-    type Target = u64;
-
-    fn from_csv(val: Self::Target) -> Result<Self, String> {
-        match val {
-            0 => Ok(SampleValue::SampleA),
-            1 => Ok(SampleValue::SampleB),
-            999 => Ok(SampleValue::Other("".to_string())),
-            _ => Err("Fail".to_string()),
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct CsvValue<T>(T)
-where
-    T: Eq + ToCsv + FromCsv;
-
-impl<T> CsvValue<T>
-where
-    T: Sized + Eq + ToCsv + FromCsv,
-{
-    fn new(val: T) -> Self {
-        Self(val)
-    }
-
-    fn value(&self) -> &T {
+impl<T, Target> CsvValue<T, Target> {
+    pub fn value(&self) -> &T {
         &self.0
     }
 }
 
-impl<T: Eq + ToCsv<Target = u64> + FromCsv<Target = u64>> Serialize for CsvValue<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let val: Self = self.clone();
-        serializer.serialize_u64(val.value().to_csv())
+impl<T, Target> From<T> for CsvValue<T, Target> {
+    fn from(val: T) -> Self {
+        CsvValue(val, PhantomData)
     }
 }
 
-impl<'de, T: Eq + ToCsv<Target = u64> + FromCsv<Target = u64>> Deserialize<'de> for CsvValue<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let value = u64::deserialize(deserializer)?;
-        let csv_value = T::from_csv(value).unwrap();
-        Ok(Self::new(csv_value))
+trait ToCsv<T, Target>: Clone {
+    fn to_csv(&self) -> CsvValue<T, Target>;
+}
+
+trait FromCsv<T>: Sized {
+    fn from_csv(val: Self) -> Result<T, String>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DefaultTarget {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Japanese {}
+
+impl<T, U, Target> ToCsv<Option<U>, Target> for Option<T>
+where
+    T: ToCsv<U, Target>,
+    U: Clone,
+{
+    fn to_csv(&self) -> CsvValue<Option<U>, Target> {
+        match self {
+            Some(v) => {
+                let v: CsvValue<U, Target> = v.to_csv();
+                let v = v.value();
+                CsvValue(Some(v.clone()), PhantomData)
+            }
+            None => CsvValue(None, PhantomData),
+        }
     }
+}
+
+impl ToCsv<String, DefaultTarget> for SampleValue {
+    fn to_csv(&self) -> CsvValue<String, DefaultTarget> {
+        match self {
+            SampleValue::SampleA => "SampleA".to_string().into(),
+            SampleValue::SampleB => "SampleB".to_string().into(),
+            SampleValue::Other(s) => s.to_string().into(),
+        }
+    }
+}
+
+impl ToCsv<String, Japanese> for SampleValue {
+    fn to_csv(&self) -> CsvValue<String, Japanese> {
+        match self {
+            SampleValue::SampleA => "サンプルA".to_string().into(),
+            SampleValue::SampleB => "サンプルB".to_string().into(),
+            SampleValue::Other(s) => format!("その他: {}", s).into(),
+        }
+    }
+}
+
+impl ToCsv<i64, DefaultTarget> for SampleValue {
+    fn to_csv(&self) -> CsvValue<i64, DefaultTarget> {
+        match self {
+            SampleValue::SampleA => 0.into(),
+            SampleValue::SampleB => 1.into(),
+            SampleValue::Other(_) => 999.into(),
+        }
+    }
+}
+
+#[test]
+fn test_to_csv() {
+    let v = SampleValue::SampleA;
+    let expected: CsvValue<String, DefaultTarget> = "SampleA".to_string().into();
+    let converted: CsvValue<String, DefaultTarget> = v.to_csv();
+    assert_eq!(expected, converted);
+
+    let expected: CsvValue<i64, DefaultTarget> = 0.into();
+    let converted: CsvValue<i64, DefaultTarget> = v.to_csv();
+    assert_eq!(expected, converted);
+
+    let maybe = Some(SampleValue::SampleA);
+    let expected: CsvValue<Option<i64>, DefaultTarget> = Some(0).into();
+    let converted: Option<SampleValue> = maybe;
+    let converted: CsvValue<Option<String>, DefaultTarget> = converted.to_csv();
+
+    println!("{}", serde_json::to_string_pretty(&converted).unwrap())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn to_csv_value() {
-        let v = SampleValue::SampleA;
-        assert_eq!(0, to_csv(v));
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    struct SampleCsvRecord {
-        value_a: CsvValue<SampleValue>,
-        value_b: CsvValue<SampleValue>,
-    }
-
-    #[test]
-    fn parse_csv() {
-        let data = "value_a,value_b\n1,0\n";
-        let mut rdr = csv::Reader::from_reader(data.as_bytes());
-        for result in rdr.deserialize() {
-            let record: SampleCsvRecord = result.unwrap();
-            assert_eq!(
-                SampleCsvRecord {
-                    value_a: CsvValue::new(SampleValue::SampleB),
-                    value_b: CsvValue::new(SampleValue::SampleA)
-                },
-                record
-            )
-        }
-    }
 }
